@@ -1,5 +1,5 @@
 """
-Bahn-Monitor Ã¢ÂÂ prueft die S4 zwischen Bissendorf, Wedemark und Hannover Hbf
+Bahn-Monitor ÃÂ¢ÃÂÃÂ prueft die S4 zwischen Bissendorf, Wedemark und Hannover Hbf
 auf Ausfaelle und Verspaetungen >= DELAY_THRESHOLD_MIN Minuten und schickt
 eine Mail per Gmail-SMTP.
 
@@ -67,10 +67,38 @@ class Issue:
     reason: str
 
     def short(self) -> str:
+        # Knappe Form fuer Action-Logs
         ts = _format_iso_local(self.planned_when)
         if self.cancelled:
-            return f"AUSFALL  | {self.line} {ts} {self.from_name} -> {self.to_name} (Richtung {self.direction})"
-        return f"VERSPAETUNG +{self.delay_min} min | {self.line} {ts} {self.from_name} -> {self.to_name} (Richtung {self.direction})"
+            return f"AUSFALL | {self.line.replace(' ','')} {ts} {self.from_name} -> {self.to_name}"
+        return f"VERSPAETUNG +{self.delay_min} min | {self.line.replace(' ','')} {ts} {self.from_name} -> {self.to_name}"
+
+    def for_mail(self) -> str:
+        # Ausfuehrlicher Block fuer die Mail
+        line_clean = self.line.replace(' ', '')
+        planned = _format_iso_local(self.planned_when)
+        out = []
+        out.append(f"Verbindung: {line_clean} von {self.from_name} nach {self.to_name}")
+        out.append(f"  Planmaessig:  {planned} ab {self.from_name}")
+        if self.cancelled:
+            out.append(f"  Status:       FAELLT AUS")
+        else:
+            actual = _format_iso_local(self.actual_when) if self.actual_when else "?"
+            out.append(f"  Tatsaechlich: {actual} (+{self.delay_min} Minuten Verspaetung)")
+        if self.direction:
+            out.append(f"  Richtung:     {self.direction}")
+        # Anspruchs-Hinweise
+        out.append("")
+        out.append("  Deine Anspruechen:")
+        out.append("    - GVH-Punktlichkeitsgarantie: 5 EUR pro Vorfall  |  Frist: 14 Tage")
+        out.append("      Antrag online: https://www.uestra.de/service/uestra-gvh-garantie/")
+        if self.cancelled or self.delay_min >= 60:
+            out.append("    - DB-Bundesfahrgastrechte: 1,50 EUR pro Vorfall (ab >=60 min oder Ausfall)")
+            out.append("      Antrag: https://www.bahn.de/service/informationen-buchung/fahrgastrechte/service-center")
+        if self.cancelled or self.delay_min >= 20:
+            out.append("    - Hoeherklassige Zuege (RE/IC/ICE) duerfen kostenlos genutzt werden")
+            out.append("      Mehrkosten anschliessend erstattbar (Ticket aufheben)")
+        return "\n".join(out)
 
 
 def http_get_json(url: str, timeout: int = 20):
@@ -181,16 +209,20 @@ def build_email(issues: list):
     if n_delay:
         parts.append(f"{n_delay} Verspaetung" if n_delay == 1 else f"{n_delay} Verspaetungen")
     subject = "S4-Alarm: " + " und ".join(parts)
-    lines = ["Folgende Stoerungen auf der S4 (Bissendorf, Wedemark <-> Hannover Hbf):", ""]
-    for it in issues:
-        lines.append("  - " + it.short())
-    lines += [
+
+    sep = "\n" + ("-" * 60) + "\n"
+    blocks = [it.for_mail() for it in issues]
+    body_lines = [
+        f"Stoerung auf der S4 (Bissendorf, Wedemark <-> Hannover Hbf):",
         "",
-        f"Schwelle Verspaetung: >= {DELAY_THRESHOLD_MIN} Minuten",
-        f"Datenquelle: db-rest ({API_BASE})",
+        sep.join(blocks),
+        "",
+        ("=" * 60),
+        f"Schwelle Verspaetung: >= {DELAY_THRESHOLD_MIN} Minuten  |  Datenquelle: db-rest",
         f"Geprueft: {datetime.now(BERLIN_TZ).strftime('%d.%m.%Y %H:%M %Z')}",
+        f"Generiert von: github.com/socialole2024-dev/bahn-monitor",
     ]
-    return subject, "\n".join(lines)
+    return subject, "\n".join(body_lines)
 
 
 def send_mail(subject: str, body: str) -> None:
