@@ -1,6 +1,10 @@
 """
-Bahn-Monitor â prueft die S4 zwischen Bissendorf, Wedemark und Hannover Hbf
-auf Ausfaelle und Verspaetungen >= 21 Minuten und schickt eine Mail per Gmail-SMTP.
+Bahn-Monitor — prueft die S4 zwischen Bissendorf, Wedemark und Hannover Hbf
+auf Ausfaelle und Verspaetungen >= DELAY_THRESHOLD_MIN Minuten und schickt
+eine Mail per Gmail-SMTP.
+
+Datenquelle: db-rest /journeys (https://v6.db.transport.rest), eine offene HAFAS-Bridge.
+Laeuft alle 15 Minuten via GitHub Actions.
 """
 
 from __future__ import annotations
@@ -19,16 +23,19 @@ except Exception:
 
 API_BASE = "https://v6.db.transport.rest"
 
+# Korrigierte Stop-IDs (von db-rest /locations verifiziert)
 STATIONS = {
-    "Bissendorf, Wedemark": "8099382",
+    "Bissendorf, Wedemark": "8001000",
     "Hannover Hbf":         "8000152",
 }
 
+# Strecken (Start, Ziel) - beide Richtungen werden abgefragt
 ROUTES = [
     ("Bissendorf, Wedemark", "Hannover Hbf"),
     ("Hannover Hbf",         "Bissendorf, Wedemark"),
 ]
 
+# Linien-Filter
 LINE_FILTERS = {"S4", "S 4"}
 
 # Empfaenger der Stoerungs-Mails. Hier aendern (direkt im Code), kein Secret noetig.
@@ -38,10 +45,10 @@ RECIPIENTS = [
 ]
 
 DELAY_THRESHOLD_MIN = int(os.environ.get("DELAY_THRESHOLD_MIN", "0"))  # TEST: 0 = jede S4 triggert
-LOOKAHEAD_MIN       = int(os.environ.get("LOOKAHEAD_MIN", "120"))
+JOURNEYS_RESULTS    = int(os.environ.get("JOURNEYS_RESULTS", "8"))
 STATE_FILE          = Path(os.environ.get("STATE_FILE", "state.json"))
 DRY_RUN             = os.environ.get("DRY_RUN", "") == "1"
-USER_AGENT          = "bahn-monitor/1.0 (github.com/socialole2024-dev/bahn-monitor)"
+USER_AGENT          = "bahn-monitor/1.1 (github.com/socialole2024-dev/bahn-monitor)"
 SMTP_HOST = "smtp.gmail.com"
 SMTP_PORT = 465
 
@@ -72,44 +79,40 @@ def http_get_json(url: str, timeout: int = 20):
         return json.load(resp)
 
 
-def fetch_departures(stop_id: str, duration_min: int) -> list:
-    params = {"duration": str(duration_min), "results": "60", "remarks": "false", "language": "de"}
-    url = f"{API_BASE}/stops/{stop_id}/departures?{urllib.parse.urlencode(params)}"
+def fetch_journeys(from_id: str, to_id: str, results: int = 8) -> list:
+    """Holt Journeys zwischen zwei Stationen (db-rest /journeys)."""
+    params = {
+        "from": from_id,
+        "to": to_id,
+        "results": str(results),
+        "stopovers": "false",
+        "transfers": "0",  # nur direkte Verbindungen
+    }
+    url = f"{API_BASE}/journeys?{urllib.parse.urlencode(params)}"
     data = http_get_json(url)
     if isinstance(data, dict):
-        return data.get("departures", []) or []
-    if isinstance(data, list):
-        return data
+        return data.get("journeys", []) or []
     return []
 
 
-def is_target_line(dep: dict) -> bool:
-    line = dep.get("line") or {}
-    return (line.get("name") or "").strip() in LINE_FILTERS
-
-
-def goes_toward(dep: dict, target_station_name: str) -> bool:
-    direction = (dep.get("direction") or "").lower()
-    target = target_station_name.lower()
-    if "hannover" in target:
-        return "hannover" in direction
-    if "bissendorf" in target or "bennem" in target:
-        return any(k in direction for k in ("bennem", "bissendorf", "mellendorf"))
-    return False
-
-
-def detect_issues(deps: list, from_name: str, to_name: str) -> list:
+def issues_from_journeys(journeys: list, from_name: str, to_name: str) -> list:
+    """Filtert auf S4-Verbindungen mit Stoerung."""
     issues = []
-    for dep in deps:
-        if not is_target_line(dep) or not goes_toward(dep, to_name):
+    for j in journeys:
+        legs = j.get("legs") or []
+        if len(legs) != 1:  # keine Umstiege
             continue
-        line = (dep.get("line") or {}).get("name", "?")
-        cancelled = bool(dep.get("cancelled"))
-        delay_min = int(round((dep.get("delay") or 0) / 60))
-        trip_id = dep.get("tripId") or f"{line}-{dep.get('plannedWhen', '')}"
-        planned_when = dep.get("plannedWhen") or ""
-        actual_when = dep.get("when") or ""
-        direction = dep.get("direction") or ""
+        leg = legs[0]
+        line = ((leg.get("line") or {}).get("name") or "").strip()
+        if line not in LINE_FILTERS:
+            continue
+        cancelled = bool(leg.get("cancelled"))
+        delay_seconds = leg.get("departureDelay")
+        delay_min = int(round((delay_seconds or 0) / 60))
+        trip_id = leg.get("tripId") or f"{line}-{leg.get('plannedDeparture','')}"
+        planned_when = leg.get("plannedDeparture") or ""
+        actual_when = leg.get("departure") or ""
+        direction = leg.get("direction") or ""
         if cancelled:
             issues.append(Issue(trip_id, line, from_name, to_name, planned_when, actual_when, 0, True, direction, "Ausfall"))
         elif delay_min >= DELAY_THRESHOLD_MIN:
@@ -193,7 +196,6 @@ def build_email(issues: list):
 def send_mail(subject: str, body: str) -> None:
     user = os.environ.get("EMAIL_USER", "")
     pwd  = os.environ.get("EMAIL_APP_PASSWORD", "")
-    # RECIPIENTS hat Vorrang. EMAIL_TO env wird nur genutzt, wenn RECIPIENTS leer ist.
     if RECIPIENTS:
         to_list = list(RECIPIENTS)
     else:
@@ -220,17 +222,21 @@ def send_mail(subject: str, body: str) -> None:
 
 
 def main() -> int:
-    print(f"Bahn-Monitor laeuft - Schwelle {DELAY_THRESHOLD_MIN} min, Vorschau {LOOKAHEAD_MIN} min")
+    print(f"Bahn-Monitor laeuft - Schwelle {DELAY_THRESHOLD_MIN} min, Endpoint /journeys")
     all_issues = []
     for from_name, to_name in ROUTES:
-        stop_id = STATIONS[from_name]
+        from_id = STATIONS[from_name]
+        to_id   = STATIONS[to_name]
         try:
-            deps = fetch_departures(stop_id, LOOKAHEAD_MIN)
-            print(f"  {from_name} -> {to_name}: {len(deps)} Abfahrten geholt")
-        except urllib.error.URLError as e:
-            print(f"  FEHLER beim Abrufen {from_name}: {e}", file=sys.stderr)
+            journeys = fetch_journeys(from_id, to_id, JOURNEYS_RESULTS)
+            print(f"  {from_name} -> {to_name}: {len(journeys)} Verbindungen geholt")
+        except urllib.error.HTTPError as e:
+            print(f"  HTTP-FEHLER {e.code} beim Abrufen {from_name} -> {to_name}: {e.reason}", file=sys.stderr)
             continue
-        issues = detect_issues(deps, from_name, to_name)
+        except urllib.error.URLError as e:
+            print(f"  NETZWERK-FEHLER {from_name} -> {to_name}: {e}", file=sys.stderr)
+            continue
+        issues = issues_from_journeys(journeys, from_name, to_name)
         if issues:
             print(f"    {len(issues)} potentielle Stoerungen gefunden")
         all_issues.extend(issues)
