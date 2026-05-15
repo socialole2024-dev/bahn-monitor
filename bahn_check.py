@@ -1,5 +1,5 @@
 """
-Bahn-Monitor — prueft die S4 zwischen Bissendorf, Wedemark und Hannover Hbf
+Bahn-Monitor â prueft die S4 zwischen Bissendorf, Wedemark und Hannover Hbf
 auf Ausfaelle und Verspaetungen >= DELAY_THRESHOLD_MIN Minuten und schickt
 eine Mail per Gmail-SMTP.
 
@@ -223,6 +223,25 @@ def send_mail(subject: str, body: str) -> None:
 
 def main() -> int:
     print(f"Bahn-Monitor laeuft - Schwelle {DELAY_THRESHOLD_MIN} min, Endpoint /journeys")
+    # TEMPORAER: erzwinge Test-Mail
+    if os.environ.get("FORCE_MAIL", "") == "1" or True:
+        print("[FORCE_MAIL] Sende Test-Mail mit Fake-Stoerung")
+        test_issue = Issue(
+            trip_id="test-" + datetime.now(BERLIN_TZ).strftime("%H%M%S"),
+            line="S 4",
+            from_name="Bissendorf, Wedemark",
+            to_name="Hannover Hbf",
+            planned_when=datetime.now(BERLIN_TZ).isoformat(),
+            actual_when=datetime.now(BERLIN_TZ).isoformat(),
+            delay_min=42,
+            cancelled=False,
+            direction="Hannover Hbf (TEST)",
+            reason="Verspaetung",
+        )
+        subject, body = build_email([test_issue])
+        subject = "[TEST] " + subject
+        send_mail(subject, body)
+        return 0
     all_issues = []
     for from_name, to_name in ROUTES:
         from_id = STATIONS[from_name]
