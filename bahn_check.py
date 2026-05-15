@@ -192,11 +192,12 @@ def build_email(issues: list):
 def send_mail(subject: str, body: str) -> None:
     user = os.environ.get("EMAIL_USER", "")
     pwd  = os.environ.get("EMAIL_APP_PASSWORD", "")
-    env_to = os.environ.get("EMAIL_TO", "").strip()
-    if env_to:
-        to_list = [x.strip() for x in env_to.split(",") if x.strip()]
-    else:
+    # RECIPIENTS hat Vorrang. EMAIL_TO env wird nur genutzt, wenn RECIPIENTS leer ist.
+    if RECIPIENTS:
         to_list = list(RECIPIENTS)
+    else:
+        env_to = os.environ.get("EMAIL_TO", "").strip()
+        to_list = [x.strip() for x in env_to.split(",") if x.strip()]
     if DRY_RUN:
         print("[DRY_RUN] Wuerde Mail senden:")
         print("  An:", ", ".join(to_list))
