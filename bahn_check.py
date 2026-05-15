@@ -1,5 +1,5 @@
 """
-Bahn-Monitor — prueft die S4 zwischen Bissendorf, Wedemark und Hannover Hbf
+Bahn-Monitor â prueft die S4 zwischen Bissendorf, Wedemark und Hannover Hbf
 auf Ausfaelle und Verspaetungen >= 21 Minuten und schickt eine Mail per Gmail-SMTP.
 """
 
@@ -34,9 +34,10 @@ LINE_FILTERS = {"S4", "S 4"}
 # Empfaenger der Stoerungs-Mails. Hier aendern (direkt im Code), kein Secret noetig.
 RECIPIENTS = [
     "jasper.ernst@gmx.de",
+    "ole.burose@gmail.com",
 ]
 
-DELAY_THRESHOLD_MIN = int(os.environ.get("DELAY_THRESHOLD_MIN", "21"))
+DELAY_THRESHOLD_MIN = int(os.environ.get("DELAY_THRESHOLD_MIN", "0"))  # TEST: 0 = jede S4 triggert
 LOOKAHEAD_MIN       = int(os.environ.get("LOOKAHEAD_MIN", "120"))
 STATE_FILE          = Path(os.environ.get("STATE_FILE", "state.json"))
 DRY_RUN             = os.environ.get("DRY_RUN", "") == "1"
