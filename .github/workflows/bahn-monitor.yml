@@ -1,0 +1,47 @@
+name: bahn-monitor
+
+# Laeuft alle 15 Minuten + manueller Trigger
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+# Damit der Job state.json zurueck ins Repo committen darf
+permissions:
+  contents: write
+
+# Verhindert, dass parallele Runs gleichzeitig committen
+concurrency:
+  group: bahn-monitor
+  cancel-in-progress: false
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run check
+        env:
+          EMAIL_USER:         ${{ secrets.EMAIL_USER }}
+          EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
+          EMAIL_TO:           ${{ secrets.EMAIL_TO }}
+        run: python bahn_check.py
+
+      - name: Persist state
+        run: |
+          if [[ -n "$(git status --porcelain state.json)" ]]; then
+            git config user.name  "bahn-monitor-bot"
+            git config user.email "bahn-monitor-bot@users.noreply.github.com"
+            git add state.json
+            git commit -m "state: update notified trips [skip ci]"
+            git push
+          else
+            echo "Kein State-Update."
+          fi
